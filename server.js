@@ -148,6 +148,51 @@ app.post('/assemble-all', async (req, res) => {
     formats: ['16:9', '9:16', '1:1']
   });
 });
-
+// ── Concat video clips + voiceover ──
+app.post('/concat', async (req, res) => {
+  const jobId = uuidv4();
+  const jobDir = path.join(TMP, jobId);
+  await fs.ensureDir(jobDir);
+  try {
+    const { clipUrls = [], voiceoverUrl, videoId, userId } = req.body;
+    
+    // Download clips
+    const clipPaths = [];
+    for (let i = 0; i < clipUrls.length; i++) {
+      const dest = path.join(jobDir, `scene_${String(i).padStart(3,'0')}.mp4`);
+      await download(clipUrls[i], dest);
+      clipPaths.push(dest);
+    }
+    
+    // Download voiceover
+    const voicePath = path.join(jobDir, 'voiceover.mp3');
+    await download(voiceoverUrl, voicePath);
+    
+    // Concat clips
+    const concatList = path.join(jobDir, 'filelist.txt');
+    await fs.writeFile(concatList, clipPaths.map(p => `file '${p}'`).join('\n'));
+    const concatPath = path.join(jobDir, 'concat.mp4');
+    await new Promise((resolve, reject) => {
+      ffmpeg().input(concatList).inputOptions(['-f concat','-safe 0'])
+        .outputOptions(['-c:v libx264','-preset fast'])
+        .output(concatPath).on('end', resolve).on('error', reject).run();
+    });
+    
+    // Add voiceover
+    const finalPath = path.join(jobDir, 'final_16x9.mp4');
+    await new Promise((resolve, reject) => {
+      ffmpeg().input(concatPath).input(voicePath)
+        .outputOptions(['-c:v copy','-c:a aac','-shortest'])
+        .output(finalPath).on('end', resolve).on('error', reject).run();
+    });
+    
+    res.download(finalPath, 'final_16x9.mp4', async () => {
+      await fs.remove(jobDir).catch(() => {});
+    });
+  } catch(err) {
+    await fs.remove(jobDir).catch(() => {});
+    res.status(500).json({ error: err.message });
+  }
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`ViraNode FFmpeg Server running on port ${PORT}`));
